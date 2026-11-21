@@ -1,6 +1,5 @@
 #!/bin/sh
-# 一次性定制：LAN IP / root 空密码 / AdGuardHome 接管 DNS
-# openwrt 执行完会自动删除本文件
+# 一次性定制（首启执行，OpenWrt 跑完自动删除）
 
 # ① LAN → 192.168.9.1
 uci -q set network.lan.ipaddr='192.168.9.1'
@@ -9,7 +8,7 @@ uci -q commit network
 # ② root 空密码
 passwd -d root 2>/dev/null
 
-# ③ dropbear 允许空密码（本版 init 无 -B 开关，打补丁）
+# ③ dropbear 允许空密码（本版 init 无 -B，打补丁）
 uci -q set dropbear.@dropbear[0].PasswordAuth='on'
 uci -q set dropbear.@dropbear[0].RootPasswordAuth='on'
 uci -q set dropbear.@dropbear[0].RootLogin='on'
@@ -18,16 +17,17 @@ if ! grep -q 'command -B' /etc/init.d/dropbear 2>/dev/null; then
 	sed -i 's|procd_append_param command -p "\${Port}"|procd_append_param command -B -p "${Port}"|' /etc/init.d/dropbear
 fi
 
-# ④ AdGuardHome 接管 53，dnsmasq 只留 DHCP（port=0 关掉它的 DNS）
+# ④ AdGuardHome 接管 53，dnsmasq 只留 DHCP
 uci -q set adguardhome.config.enabled='1'
 uci -q commit adguardhome
 uci -q set dhcp.@dnsmasq[0].port='0'
-uci -q set dhcp.@dnsmasq[0].dnsmasq_dns='0' 2>/dev/null
 uci -q commit dhcp
-
 /etc/init.d/adguardhome enable 2>/dev/null
 /etc/init.d/adguardhome restart 2>/dev/null
 /etc/init.d/dnsmasq restart 2>/dev/null
 /etc/init.d/dropbear restart 2>/dev/null
+
+# ⑤ pw2 脚本可执行位（GitHub 写入是 0644）
+chmod 755 /usr/bin/pw2 2>/dev/null
 
 exit 0
