@@ -88,6 +88,10 @@ uci -q commit firewall
 
 # ---------- ⑤ 系统杂项 ----------
 uci -q set system.@system[0].hostname='onu'
+# 局域网域名：插 LAN 口的设备可以用 onu.lan 直接访问后台
+uci -q set dhcp.@dnsmasq[0].domain='lan'
+uci -q set dhcp.@dnsmasq[0].local='/lan/'
+uci -q commit dhcp
 uci -q set system.@system[0].timezone='CST-8'
 uci -q set system.@system[0].zonename='Asia/Shanghai'
 uci -q commit system
