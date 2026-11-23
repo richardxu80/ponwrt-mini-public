@@ -24,18 +24,17 @@ uci -q delete network.lan.netmask
 uci -q delete network.lan.ip6assign
 uci -q add_list network.lan.ipaddr='192.168.9.1/24'
 
-# WAN = lan1（2.5G 口），静态地址作为调试通道；将来接光纤再改回 pon0
+# WAN = lan1（2.5G 口），走 DHCP —— 插到任何网络都能自己拿地址，不写死 IP
 uci -q set network.wan=interface
 uci -q set network.wan.device='lan1'
-uci -q set network.wan.proto='static'
-uci -q set network.wan.ipaddr='192.168.3.199'
-uci -q set network.wan.netmask='255.255.255.0'
-uci -q set network.wan.gateway='192.168.3.1'
+uci -q set network.wan.proto='dhcp'
+uci -q delete network.wan.ipaddr
+uci -q delete network.wan.netmask
+uci -q delete network.wan.gateway
 uci -q delete network.wan.dns
-uci -q add_list network.wan.dns='192.168.3.1'
 uci -q delete network.wan6
 uci -q commit network
-log "网口：lan1=WAN(3.199) · lan2/3/4=LAN(9.1)"
+log "网口：lan1=WAN(DHCP) · lan2/3/4=LAN(9.1)"
 
 # ---------- ② IPv6 彻底关闭（内核 + 配置 + ifup 钩子） ----------
 printf 'net.ipv6.conf.all.disable_ipv6=1\nnet.ipv6.conf.default.disable_ipv6=1\nnet.ipv6.conf.lo.disable_ipv6=1\n' > /etc/sysctl.d/90-disable-ipv6.conf
