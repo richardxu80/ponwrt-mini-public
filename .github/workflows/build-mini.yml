@@ -62,9 +62,9 @@ jobs:
         run: |
           cp configs/an7581-mini3.config .config
           make defconfig
-          echo "=== 内核符号断言（缺则立刻失败，不烧 1.5 小时）==="
-          for s in CONFIG_AIR_EN8811H_PHY CONFIG_PHYLIB; do
-            if grep -qE "^${s}=(m|y)" .config; then echo "OK   ${s}"; else echo "FATAL ${s} 未启用"; exit 1; fi
+          echo "=== 包选择断言（内核符号不在顶层 .config 里，只查包级符号）==="
+          for s in CONFIG_PACKAGE_kmod-phy-airoha-en8811h CONFIG_PACKAGE_airoha-en8811h-firmware CONFIG_PACKAGE_kmod-libphy CONFIG_PACKAGE_kmod-airoha-xpon CONFIG_PACKAGE_airoha-pond CONFIG_PACKAGE_adguardhome; do
+            if grep -qE "^${s}=[ym]" .config; then echo "OK   ${s}"; else echo "FATAL ${s} 未选中"; exit 1; fi
           done
           grep -E "^CONFIG_(I2C|MDIO_DEVICE|AIROHA_EN7572)" .config || true
           echo "=== 关键项终态 ==="
