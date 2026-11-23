@@ -62,6 +62,11 @@ jobs:
         run: |
           cp configs/an7581-mini3.config .config
           make defconfig
+          echo "=== 内核符号断言（缺则立刻失败，不烧 1.5 小时）==="
+          for s in CONFIG_AIR_EN8811H_PHY CONFIG_PHYLIB; do
+            if grep -qE "^${s}=(m|y)" .config; then echo "OK   ${s}"; else echo "FATAL ${s} 未启用"; exit 1; fi
+          done
+          grep -E "^CONFIG_(I2C|MDIO_DEVICE|AIROHA_EN7572)" .config || true
           echo "=== 关键项终态 ==="
           for k in TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi \
                    TARGET_PREINIT_IP PACKAGE_luci-app-passwall PACKAGE_adguardhome \
@@ -74,7 +79,20 @@ jobs:
         run: make download -j$(nproc) || make download -j8
 
       - name: Build
-        run: make -j$(nproc) 2>&1 | tail -120
+        shell: bash
+        run: |
+          set -o pipefail
+          make -j$(nproc) 2>&1 | tee build.log | tail -120
+
+      - name: Assert manifest
+        run: |
+          M=$(ls bin/targets/airoha/an7581/*.manifest | head -1)
+          echo "manifest: $M"; echo "包数: $(wc -l < "$M")"
+          fail=0
+          for p in kmod-phy-airoha-en8811h airoha-en8811h-firmware kmod-libphy kmod-airoha-xpon kmod-airoha-pon-frontend kmod-nft-tproxy kmod-tun adguardhome; do
+            if grep -q "^$p " "$M"; then echo "OK   $p"; else echo "MISS $p"; fail=1; fi
+          done
+          exit $fail
 
       - name: Report
         run: |
@@ -98,3 +116,11 @@ jobs:
             bin/targets/airoha/an7581/sha256sums
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
