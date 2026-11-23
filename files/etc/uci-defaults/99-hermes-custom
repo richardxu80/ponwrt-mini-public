@@ -1,49 +1,111 @@
 #!/bin/sh
-# 一次性定制（首启执行，OpenWrt 跑完自动删除）
+# 一次性定制：首启把机器做成"干净可用"的最终状态，跑完 OpenWrt 自动删除本脚本
+# 目标：lan1=WAN(192.168.3.199) · lan2/3/4=LAN(192.168.9.1) · IPv6 全关
+#       空密码+公钥登录 · dropbear 不绑网口 · 不装 web 装包入口
 
-# ① LAN → 192.168.9.1
-uci -q set network.lan.ipaddr='192.168.9.1'
+log() { echo "[hermes] $*"; }
+
+# ---------- ① 网口布局 ----------
+BRIDGE=$(uci show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-lan'$/\1/p")
+if [ -n "$BRIDGE" ]; then
+	uci -q delete network.$BRIDGE.ports
+	for p in lan2 lan3 lan4; do uci -q add_list network.$BRIDGE.ports="$p"; done
+else
+	uci -q set network.brlan=device
+	uci -q set network.brlan.name='br-lan'
+	uci -q set network.brlan.type='bridge'
+	for p in lan2 lan3 lan4; do uci -q add_list network.brlan.ports="$p"; done
+fi
+
+uci -q set network.lan.device='br-lan'
+uci -q set network.lan.proto='static'
+uci -q delete network.lan.ipaddr
+uci -q delete network.lan.netmask
+uci -q delete network.lan.ip6assign
+uci -q add_list network.lan.ipaddr='192.168.9.1/24'
+
+# WAN = lan1（2.5G 口），静态地址作为调试通道；将来接光纤再改回 pon0
+uci -q set network.wan=interface
+uci -q set network.wan.device='lan1'
+uci -q set network.wan.proto='static'
+uci -q set network.wan.ipaddr='192.168.3.199'
+uci -q set network.wan.netmask='255.255.255.0'
+uci -q set network.wan.gateway='192.168.3.1'
+uci -q delete network.wan.dns
+uci -q add_list network.wan.dns='192.168.3.1'
+uci -q delete network.wan6
 uci -q commit network
+log "网口：lan1=WAN(3.199) · lan2/3/4=LAN(9.1)"
 
-# ② root 空密码
+# ---------- ② IPv6 彻底关闭（内核 + 配置 + ifup 钩子） ----------
+printf 'net.ipv6.conf.all.disable_ipv6=1\nnet.ipv6.conf.default.disable_ipv6=1\nnet.ipv6.conf.lo.disable_ipv6=1\n' > /etc/sysctl.d/90-disable-ipv6.conf
+grep -q disable_ipv6 /etc/sysctl.conf 2>/dev/null || printf '\nnet.ipv6.conf.all.disable_ipv6=1\nnet.ipv6.conf.default.disable_ipv6=1\nnet.ipv6.conf.lo.disable_ipv6=1\n' >> /etc/sysctl.conf
+for i in all default lo; do sysctl -w net.ipv6.conf.$i.disable_ipv6=1 >/dev/null 2>&1; done
+
+mkdir -p /etc/hotplug.d/iface
+cat > /etc/hotplug.d/iface/90-noipv6 <<'EOS'
+#!/bin/sh
+# netifd 在拉接口时会把 disable_ipv6 重置为 0，这里兜住
+[ -n "$INTERFACE" ] && echo 1 > /proc/sys/net/ipv6/conf/$INTERFACE/disable_ipv6 2>/dev/null
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null
+exit 0
+EOS
+chmod 755 /etc/hotplug.d/iface/90-noipv6
+
+uci -q set dhcp.lan.dhcpv6='disabled'
+uci -q set dhcp.lan.ra='disabled'
+uci -q set dhcp.lan.ndp='disabled'
+uci -q delete network.globals.ula_prefix
+uci -q commit dhcp
+uci -q commit network
+log "IPv6 已全关"
+
+# ---------- ③ 登录 ----------
 passwd -d root 2>/dev/null
+mkdir -p /etc/dropbear /root/.ssh
+chmod 700 /root/.ssh
+cat > /etc/dropbear/authorized_keys <<'EOS'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAqfVYecW21OkgYMM5xAeoezKYeVn1Gj8TSeUwDSPvT5 hermes-onu@db
+EOS
+cp /etc/dropbear/authorized_keys /root/.ssh/authorized_keys
+chmod 600 /etc/dropbear/authorized_keys /root/.ssh/authorized_keys
 
-# ③ dropbear 允许空密码（本版 init 无 -B，打补丁）
 uci -q set dropbear.@dropbear[0].PasswordAuth='on'
 uci -q set dropbear.@dropbear[0].RootPasswordAuth='on'
 uci -q set dropbear.@dropbear[0].RootLogin='on'
+uci -q set dropbear.@dropbear[0].Port='22'
+# 接口绑定是本版 init 的自定义功能，绑了换口就失联，全部清掉
+uci -q delete dropbear.@dropbear[0].DirectInterface
+uci -q delete dropbear.@dropbear[0]._direct
+uci -q delete dropbear.@dropbear[0].Interface
 uci -q commit dropbear
-if ! grep -q 'command -B' /etc/init.d/dropbear 2>/dev/null; then
-	sed -i 's|procd_append_param command -p "\${Port}"|procd_append_param command -B -p "${Port}"|' /etc/init.d/dropbear
-fi
+grep -q 'command -B' /etc/init.d/dropbear 2>/dev/null || sed -i 's|procd_append_param command -p "${Port}"|procd_append_param command -B -p "${Port}"|' /etc/init.d/dropbear
+log "登录：空密码 + 公钥，dropbear 不绑网口"
 
-# ④ AdGuardHome 接管 53，dnsmasq 只留 DHCP
-uci -q set adguardhome.config.enabled='1'
-uci -q commit adguardhome
-uci -q set dhcp.@dnsmasq[0].port='0'
-uci -q commit dhcp
-/etc/init.d/adguardhome enable 2>/dev/null
-/etc/init.d/adguardhome restart 2>/dev/null
-/etc/init.d/dnsmasq restart 2>/dev/null
-/etc/init.d/dropbear restart 2>/dev/null
+# ---------- ④ 防火墙 ----------
+WANZONE=$(uci show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='wan'$/\1/p")
+[ -n "$WANZONE" ] && uci -q set firewall.$WANZONE.input='ACCEPT'
+uci -q commit firewall
 
-# ⑤ pw2 脚本可执行位（GitHub 写入是 0644）
+# ---------- ⑤ 系统杂项 ----------
+uci -q set system.@system[0].hostname='onu'
+uci -q set system.@system[0].timezone='CST-8'
+uci -q set system.@system[0].zonename='Asia/Shanghai'
+uci -q commit system
+
+# AdGuardHome：装好但不启用（首启无上游配置会把整个 LAN 的 DNS 打断，等人工配完再切）
+uci -q set adguardhome.config.enabled='0'
+uci -q commit adguardhome 2>/dev/null
+
+# ---------- ⑥ 删掉 web 装包入口 ----------
+apk del luci-app-package-manager luci-i18n-package-manager-zh-cn 2>/dev/null
+
+# ---------- ⑦ 杂项权限 ----------
 chmod 755 /usr/bin/pw2 2>/dev/null
 
+# ---------- ⑧ 主题保持 bootstrap（碳主题不在镜像里） ----------
+uci -q set luci.main.mediaurlbase='/luci-static/bootstrap'
+uci -q commit luci 2>/dev/null
 
-# ⑥ 管理口 mgmt：lan4 独立出桥，静态 192.168.3.199/24（调试用，稳定后可删）
-if [ -e /sys/class/net/lan4 ]; then
-	DEV=$(uci show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-lan'$/\1/p")
-	[ -n "$DEV" ] && uci -q del_list network.$DEV.ports='lan4'
-	uci -q set network.mgmt=interface
-	uci -q set network.mgmt.proto='static'
-	uci -q set network.mgmt.device='lan4'
-	uci -q set network.mgmt.ipaddr='192.168.3.199'
-	uci -q set network.mgmt.netmask='255.255.255.0'
-	uci -q set network.mgmt.delegate='0'
-	uci -q commit network
-	uci -q add_list firewall.@zone[0].network='mgmt'
-	uci -q commit firewall
-fi
-
+log "首启定制完成"
 exit 0
