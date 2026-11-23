@@ -30,4 +30,20 @@ uci -q commit dhcp
 # ⑤ pw2 脚本可执行位（GitHub 写入是 0644）
 chmod 755 /usr/bin/pw2 2>/dev/null
 
+
+# ⑥ 管理口 mgmt：lan4 独立出桥，静态 192.168.3.199/24（调试用，稳定后可删）
+if [ -e /sys/class/net/lan4 ]; then
+	DEV=$(uci show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-lan'$/\1/p")
+	[ -n "$DEV" ] && uci -q del_list network.$DEV.ports='lan4'
+	uci -q set network.mgmt=interface
+	uci -q set network.mgmt.proto='static'
+	uci -q set network.mgmt.device='lan4'
+	uci -q set network.mgmt.ipaddr='192.168.3.199'
+	uci -q set network.mgmt.netmask='255.255.255.0'
+	uci -q set network.mgmt.delegate='0'
+	uci -q commit network
+	uci -q add_list firewall.@zone[0].network='mgmt'
+	uci -q commit firewall
+fi
+
 exit 0
